@@ -1,0 +1,11 @@
+aiohttp
+botbuilder-core
+botbuilder-integration-aiohttp
+azure-storage-blob
+azure-search-documents
+openai
+pandas
+openpyxl
+PyPDF2
+python-dotenv
+tiktoken
