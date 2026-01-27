@@ -7,7 +7,7 @@ from datetime import datetime
 
 from azure.storage.blob import BlobServiceClient
 from azure.search.documents import SearchClient
-from azure.search.documents.indexes.models import SearchDocument
+#from azure.search.documents.indexes.models import SearchDocument
 from azure.core.credentials import AzureKeyCredential
 
 from PyPDF2 import PdfReader
@@ -133,3 +133,4 @@ def ingest_all_blobs():
 
 if __name__ == "__main__":
     print(ingest_all_blobs())
+
