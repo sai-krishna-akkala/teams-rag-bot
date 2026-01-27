@@ -1,6 +1,8 @@
 fastapi
 uvicorn
 gunicorn
+aiohttp
+
 
 botbuilder-core
 botbuilder-schema
@@ -15,3 +17,4 @@ PyPDF2
 
 openai
 python-dotenv
+
