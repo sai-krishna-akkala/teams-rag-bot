@@ -1,6 +1,6 @@
 import os
-import asyncio
-from aiohttp import web
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from botbuilder.core import BotFrameworkAdapterSettings, BotFrameworkAdapter, TurnContext
 from botbuilder.schema import Activity
@@ -21,26 +21,29 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 MICROSOFT_APP_ID = os.getenv("MicrosoftAppId", "")
 MICROSOFT_APP_PASSWORD = os.getenv("MicrosoftAppPassword", "")
 
-# OpenAI models
 EMBED_MODEL = "text-embedding-3-small"
 CHAT_MODEL = "gpt-4o-mini"
 
+# ============ Clients ============
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# Azure AI Search client
 search_client = SearchClient(
     endpoint=AZURE_SEARCH_ENDPOINT,
     index_name=AZURE_SEARCH_INDEX,
     credential=AzureKeyCredential(AZURE_SEARCH_KEY),
 )
 
-# Bot adapter
+# ============ Bot Adapter ============
 settings = BotFrameworkAdapterSettings(MICROSOFT_APP_ID, MICROSOFT_APP_PASSWORD)
 adapter = BotFrameworkAdapter(settings)
 
+# ============ FastAPI app ============
+app = FastAPI()
+
 # ============ Helpers ============
 def get_embedding(text: str):
-    resp = client.embeddings.create(model=EMBED_MODEL, input=text.replace("\n", " "))
+    text = (text or "").replace("\n", " ").strip()
+    resp = client.embeddings.create(model=EMBED_MODEL, input=text)
     return resp.data[0].embedding
 
 def search_top_k(question: str, k: int = 5):
@@ -73,15 +76,14 @@ async def answer_with_rag(question: str):
 
     prompt = f"""
 You are a Teams bot assistant.
-Answer ONLY using the context below from Excel/PDF files.
-If the answer is not in context, reply: "Not available in the uploaded Excel/PDF data."
+Answer ONLY using the context below (from Excel/PDF).
+If answer not found, say: Not available in uploaded Excel/PDF data.
 
 Context:
 {context_text}
 
 Question: {question}
-
-Answer in short and clear:
+Answer:
 """
 
     resp = client.chat.completions.create(
@@ -89,51 +91,48 @@ Answer in short and clear:
         messages=[{"role": "user", "content": prompt}],
         temperature=0
     )
-    final_answer = resp.choices[0].message.content.strip()
+    answer = resp.choices[0].message.content.strip()
 
-    # Append sources
+    # Attach sources
     src_lines = []
     for s in sources[:3]:
-        if s["source_type"] == "pdf":
-            src_lines.append(f"- {s['source_file']} (page {s['page']})")
+        if s.get("source_type") == "pdf":
+            src_lines.append(f"- {s.get('source_file')} (page {s.get('page')})")
         else:
-            src_lines.append(f"- {s['source_file']} (excel row/chunk)")
+            src_lines.append(f"- {s.get('source_file')} (excel)")
     if src_lines:
-        final_answer += "\n\n📌 Sources:\n" + "\n".join(src_lines)
+        answer += "\n\n📌 Sources:\n" + "\n".join(src_lines)
 
-    return final_answer
+    return answer
 
-# ============ Bot logic ============
 async def on_message_activity(turn_context: TurnContext):
     question = (turn_context.activity.text or "").strip()
     if not question:
-        await turn_context.send_activity("Please ask a question based on the uploaded Excel/PDF files.")
+        await turn_context.send_activity("Ask a question based on uploaded Excel/PDF files.")
         return
 
     answer = await answer_with_rag(question)
     await turn_context.send_activity(answer)
 
-# ============ HTTP endpoints ============
-async def messages(req: web.Request) -> web.Response:
-    body = await req.json()
+# ============ ROUTES ============
+@app.post("/api/messages")
+async def messages(request: Request):
+    body = await request.json()
     activity = Activity().deserialize(body)
-    auth_header = req.headers.get("Authorization", "")
+    auth_header = request.headers.get("Authorization", "")
 
     async def aux_func(turn_context: TurnContext):
         if turn_context.activity.type == "message":
             await on_message_activity(turn_context)
 
     await adapter.process_activity(activity, auth_header, aux_func)
-    return web.Response(status=201)
+    return JSONResponse(status_code=201, content={})
 
-async def ingest(req: web.Request) -> web.Response:
-    # Rebuild index when you upload new Excel/PDFs
+@app.post("/ingest")
+async def ingest():
     result = ingest_all_blobs()
-    return web.json_response(result)
+    return result
 
-app = web.Application()
-app.router.add_post("/api/messages", messages)
-app.router.add_post("/ingest", ingest)
-
-if __name__ == "__main__":
-    web.run_app(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+@app.get("/")
+async def root():
+    return {"status": "ok", "message": "RAG bot is running"}
