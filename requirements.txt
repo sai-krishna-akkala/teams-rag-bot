@@ -15,4 +15,7 @@ openpyxl
 PyPDF2
 
 python-dotenv
-openai
+
+sentence-transformers
+torch
+numpy
