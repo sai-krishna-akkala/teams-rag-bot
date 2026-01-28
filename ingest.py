@@ -9,7 +9,7 @@ from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
 
 from PyPDF2 import PdfReader
-from openai import OpenAI
+from sentence_transformers import SentenceTransformer
 
 # ========= ENV =========
 AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
@@ -19,11 +19,10 @@ AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
 AZURE_SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
 AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX", "kb-index")
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+VECTOR_DIM = 384  # MiniLM
 
-EMBED_MODEL = "text-embedding-3-small"  # 1536 dims
-
-client = OpenAI(api_key=OPENAI_API_KEY)
+# Load embedding model once
+embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
 search_client = SearchClient(
     endpoint=AZURE_SEARCH_ENDPOINT,
@@ -35,8 +34,7 @@ def get_embedding(text: str):
     text = (text or "").replace("\n", " ").strip()
     if not text:
         text = "empty"
-    resp = client.embeddings.create(model=EMBED_MODEL, input=text)
-    return resp.data[0].embedding
+    return embedder.encode([text])[0].tolist()
 
 def chunk_text(text: str, max_chars: int = 1000, overlap: int = 150):
     text = (text or "").strip()
@@ -56,9 +54,7 @@ def chunk_text(text: str, max_chars: int = 1000, overlap: int = 150):
     return chunks
 
 def normalize(v):
-    if v is None:
-        return ""
-    return str(v).strip()
+    return "" if v is None else str(v).strip()
 
 def extract_from_excel(file_bytes: bytes, filename: str):
     df = pd.read_excel(io.BytesIO(file_bytes))
@@ -90,8 +86,6 @@ def extract_from_pdf(file_bytes: bytes, filename: str):
 def ingest_all_blobs():
     if not AZURE_STORAGE_CONNECTION_STRING:
         raise ValueError("AZURE_STORAGE_CONNECTION_STRING missing")
-    if not OPENAI_API_KEY:
-        raise ValueError("OPENAI_API_KEY missing")
     if not (AZURE_SEARCH_ENDPOINT and AZURE_SEARCH_KEY and AZURE_SEARCH_INDEX):
         raise ValueError("Azure Search env vars missing")
 
@@ -111,7 +105,6 @@ def ingest_all_blobs():
         elif lower.endswith(".pdf"):
             extracted_docs.extend(extract_from_pdf(data, blob_name))
 
-    # Convert to AI Search docs
     search_docs = []
     for d in extracted_docs:
         emb = get_embedding(d["content"])
@@ -125,7 +118,6 @@ def ingest_all_blobs():
             "ingested_at": datetime.utcnow().isoformat()
         })
 
-    # Upload to Azure AI Search in batches
     batch_size = 200
     for i in range(0, len(search_docs), batch_size):
         batch = search_docs[i:i + batch_size]
