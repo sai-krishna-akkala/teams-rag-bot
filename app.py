@@ -4,12 +4,14 @@ from fastapi.responses import JSONResponse
 
 from botbuilder.core import BotFrameworkAdapterSettings, BotFrameworkAdapter, TurnContext
 from botbuilder.schema import Activity
+from botframework.connector.auth import MicrosoftAppCredentials
 
 from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
-from sentence_transformers import SentenceTransformer
 
-from ingest import ingest_all_blobs
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ============ ENV ============
 AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
@@ -18,10 +20,22 @@ AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX", "kb-index")
 
 MICROSOFT_APP_ID = os.getenv("MicrosoftAppId", "")
 MICROSOFT_APP_PASSWORD = os.getenv("MicrosoftAppPassword", "")
+MICROSOFT_APP_TENANT_ID = os.getenv("MicrosoftAppTenantId", "")
 
-# ============ Clients ============
-embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+# ============ Validation ============
+if not AZURE_SEARCH_ENDPOINT:
+    raise ValueError("AZURE_SEARCH_ENDPOINT missing")
+if not AZURE_SEARCH_KEY:
+    raise ValueError("AZURE_SEARCH_KEY missing")
+if not AZURE_SEARCH_INDEX:
+    raise ValueError("AZURE_SEARCH_INDEX missing")
 
+if MICROSOFT_APP_ID and not MICROSOFT_APP_PASSWORD:
+    raise ValueError("MicrosoftAppPassword missing")
+if MICROSOFT_APP_ID and not MICROSOFT_APP_TENANT_ID:
+    raise ValueError("MicrosoftAppTenantId missing (single tenant bot)")
+
+# ============ Azure Search ============
 search_client = SearchClient(
     endpoint=AZURE_SEARCH_ENDPOINT,
     index_name=AZURE_SEARCH_INDEX,
@@ -29,48 +43,39 @@ search_client = SearchClient(
 )
 
 # ============ Bot Adapter ============
+if MICROSOFT_APP_TENANT_ID:
+    MicrosoftAppCredentials.tenant_id = MICROSOFT_APP_TENANT_ID
+
 settings = BotFrameworkAdapterSettings(MICROSOFT_APP_ID, MICROSOFT_APP_PASSWORD)
 adapter = BotFrameworkAdapter(settings)
 
+# ============ FastAPI ============
 app = FastAPI()
 
 # ============ Helpers ============
-def get_embedding(text: str):
-    text = (text or "").replace("\n", " ").strip()
-    if not text:
-        text = "empty"
-    return embedder.encode([text])[0].tolist()
-
 def search_top_k(question: str, k: int = 5):
-    qvec = get_embedding(question)
-
     results = search_client.search(
-        search_text=question,   # hybrid search = better
-        vector_queries=[{
-            "vector": qvec,
-            "k": k,
-            "fields": "contentVector"
-        }],
-        select=["content", "source_type", "source_file", "page"],
+        search_text=question,
+        select=["content", "source_type", "source", "page"],
         top=k
     )
 
     contexts = []
     sources = []
     for r in results:
-        contexts.append(r["content"])
+        contexts.append(r.get("content", ""))
         sources.append({
             "source_type": r.get("source_type"),
-            "source_file": r.get("source_file"),
+            "source": r.get("source"),
             "page": r.get("page", 0)
         })
+
     return contexts, sources
 
-def format_answer(question: str, contexts, sources):
+def format_answer(contexts, sources):
     if not contexts:
         return "Not available in uploaded Excel/PDF data."
 
-    # Fast extractive answer
     answer = "✅ I found these relevant details in KB:\n\n"
     for i, c in enumerate(contexts[:3], start=1):
         answer += f"{i}) {c}\n\n"
@@ -78,9 +83,10 @@ def format_answer(question: str, contexts, sources):
     src_lines = []
     for s in sources[:3]:
         if s.get("source_type") == "pdf":
-            src_lines.append(f"- {s.get('source_file')} (page {s.get('page')})")
+            src_lines.append(f"- {s.get('source')} (page {s.get('page')})")
         else:
-            src_lines.append(f"- {s.get('source_file')} (excel)")
+            src_lines.append(f"- {s.get('source')} (excel)")
+
     if src_lines:
         answer += "📌 Sources:\n" + "\n".join(src_lines)
 
@@ -92,12 +98,15 @@ async def on_message_activity(turn_context: TurnContext):
         await turn_context.send_activity("Ask a question based on uploaded Excel/PDF files.")
         return
 
-    contexts, sources = search_top_k(question, k=5)
-    answer = format_answer(question, contexts, sources)
+    try:
+        contexts, sources = search_top_k(question, k=5)
+        answer = format_answer(contexts, sources)
+    except Exception as e:
+        answer = f"⚠️ Error: {str(e)}"
 
     await turn_context.send_activity(answer)
 
-# ============ ROUTES ============
+# ============ Routes ============
 @app.post("/api/messages")
 async def messages(request: Request):
     body = await request.json()
@@ -111,10 +120,6 @@ async def messages(request: Request):
     await adapter.process_activity(activity, auth_header, aux_func)
     return JSONResponse(status_code=200, content={})
 
-@app.post("/ingest")
-async def ingest():
-    return ingest_all_blobs()
-
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "RAG bot is running (FREE mode)"}
+    return {"status": "ok", "message": "RAG bot running (Codespaces TEXT mode)"}
