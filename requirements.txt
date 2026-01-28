@@ -1,8 +1,7 @@
 fastapi
-uvicorn
+uvicorn[standard]
 gunicorn
 aiohttp
-
 
 botbuilder-core
 botbuilder-schema
@@ -15,6 +14,5 @@ pandas
 openpyxl
 PyPDF2
 
-openai
 python-dotenv
-
+openai
