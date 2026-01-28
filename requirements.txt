@@ -1,21 +1,14 @@
 fastapi
-uvicorn[standard]
+uvicorn
 gunicorn
 aiohttp
 
 botbuilder-core
 botbuilder-schema
+botframework-connector
+botframework-streaming
 
-azure-storage-blob
 azure-search-documents
 azure-core
 
-pandas
-openpyxl
-PyPDF2
-
 python-dotenv
-
-sentence-transformers
-torch
-numpy
